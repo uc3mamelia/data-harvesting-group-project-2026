@@ -264,7 +264,8 @@ scrape_item_links <- function(group_name, subcategory_name, path) {
   Sys.sleep(2) # 2 second pause
   
   url <- paste0(BASE_URL, path) # constructing URL
-  cat(sprintf("  [%-22s > %-20s] %s\n", group_name, subcategory_name, url)) # progress message
+  cat(sprintf("  [%-22s > %-20s] %s\n", group_name, subcategory_name, url)) 
+  # progress message
   
 # tryCatch is R's error handling mechanism -  if the page fetches successfully 
 # it continues normally
@@ -282,9 +283,9 @@ scrape_item_links <- function(group_name, subcategory_name, path) {
   
   if (is.null(page)) return(data.frame())
   
-  # This searches the fetched page for all <table> elements whose class contains 
-  # wiki_table (the wiki's standard table format)
-  # stores them all as a collection so we can loop over them in the next step.
+# This searches the fetched page for all <table> elements whose class contains 
+# wiki_table (the wiki's standard table format)
+# stores them all as a collection so we can loop over them in the next step.
   all_tables <- xml_find_all(page, "//table[contains(@class,'wiki_table')]")
   
 # checks whether any wiki_table elements were found on the page, if none were 
@@ -310,7 +311,7 @@ scrape_item_links <- function(group_name, subcategory_name, path) {
 # hrefs and names these act as containers that will be filled up as we loop 
 # over each table on the page, accumulating all the item links and names 
 # found across multiple tables
-  } else {
+} else {
 
 # Layout A: table-based
     hrefs <- character(0)
@@ -367,7 +368,7 @@ scrape_item_links <- function(group_name, subcategory_name, path) {
 # regular expression
   hrefs <- str_remove(hrefs, fixed(BASE_URL))
   
-  # Filter to exclude upgrade variants
+# Filter to exclude upgrade variants
   is_item_link <- nchar(names) >= 2 &
     !str_detect(names, regex("upgraded", ignore_case = TRUE))
   
@@ -376,7 +377,7 @@ scrape_item_links <- function(group_name, subcategory_name, path) {
   
   if (length(hrefs) == 0) return(data.frame())
   
-  # defining the final dataframe
+# defining the final dataframe
   data.frame(
     item_name   = names,
     group       = group_name,
@@ -405,6 +406,7 @@ all_items <- pmap_dfr(
   scrape_item_links
 ) |>
   distinct(url, .keep_all = TRUE) |>
+  # remove duplicates
   arrange(group, subcategory, item_name)
 
 # announces end of scraping
