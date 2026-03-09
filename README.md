@@ -26,3 +26,11 @@ If needed, install the packages and then comment the lines. Run each section of 
 ## Expected Output
 
 A csv file with the following columns:
+- item_name
+- group
+- subcategory
+- URL (cateogry path)
+- path (section of link post category path)
+- description
+- scrape status
+- location
