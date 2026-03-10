@@ -26,7 +26,7 @@ library(httr)
 library(tidyverse)
 
 # =============================================================================
-# DEFINING THE BASE URL
+# DEFINING THE BASE URLs
 # =============================================================================
 BASE_URL      <- "https://darksouls.wiki.fextralife.com"
 EQUIPMENT_URL <- paste0(BASE_URL, "/Equipment+&+Magic")
@@ -35,9 +35,8 @@ EQUIPMENT_URL <- paste0(BASE_URL, "/Equipment+&+Magic")
 # CHECKING PERMISSIONS
 # this fetches and displays the robots.txt file of the wiki
 # then the user has to verify and confirm scraping is allowed to continue
-# thoughts: scraping is allowed at the moment, but in case the website changes
-#           their permissions this makes it not our fault
-# result: GBT bot specifically not allowed to scrape but general scraping fine
+# scraping is allowed at the moment, but it should be checked anytime the code
+# is run in case permissions change
 # =============================================================================
 cat("CHECKING ROBOTS.TXT...\n\n")
 
@@ -45,19 +44,17 @@ robots_txt <- GET(paste0(BASE_URL, "/robots.txt")) |> content(as = "text")
 cat(robots_txt)
 cat("\n")
 
-confirm <- readline("Proceed with scrape? (yes/no): ")
+confirm <- readline("Proceed with scrape? (y/n): ")
 
-if (tolower(confirm) != "yes") {
+if (tolower(confirm) != "y") {
   stop("SCRAPE ABORTED.")
 }
 
 cat("\nPROCEEDING WITH SCRAPE\n\n")
 
 # =============================================================================
-# SETTING THE USER AGENT
-# this has my user agent in for now (removed the email because i'm running it so often
-# to check edits) but this should probably be made interactive so the end user can
-# insert their own user agent??
+# SETTING USER AGENT
+# a descriptive user agent helps the website owner understand our purpose
 # =============================================================================
 set_config(
   user_agent("Mozilla/5.0 (compatible; DarkSoulsLoreScraper/1.0; Academic project)")
@@ -65,7 +62,7 @@ set_config(
 
 # =============================================================================
 # STAGE 1: Scrape group URLs from the Equipment & Magic main page (excluding upgrades)
-#          EXP. OUTPUT: 6 group URLs (excluding Upgrades)
+#          EXPECTED OUTPUT: 6 group URLs
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -73,50 +70,45 @@ set_config(
 # -----------------------------------------------------------------------------
 cat("STAGE 1: SCRAPING GROUP URLs\n")
 
-# pausing the script for 2 seconds between each request. this avoids overwhelming
-# the server and i put it in because the course materials specifically recommend
-# using a delay as part of responsible scraping behaviour. 2 seconds seems to be 
-# a standard for polite scraping in small projects? (just googled for recommendations)
+# pauses between each request. this avoids overwhelming
 Sys.sleep(2) 
 
 # accessing the "starting page"
 equipment_page <- read_html(GET(EQUIPMENT_URL) |> content(as = "text"))
 
-# pipeline for scraping the 6 group links and converting them into a data frame 
-# (names and URLs)
+# there are 6 main groups of items we want to scrape: armor, shields, weapons,
+# magic, rings and items. we want to scrape their names and urls
+
+# first we locate the nodes of our desired links through a common unique pattern:
+# <a> tags with class wiki_link that sit inside an <h3> tag anywhere 
+# within the div with id wiki-content-block
 group_links <-
-  equipment_page |> # points to the "starting page" defined above"
+  equipment_page |>
   xml_find_all("//div[@id='wiki-content-block']//h3//a[@class='wiki_link']")
-# find all <a> tags with class wiki_link that sit inside an <h3> tag anywhere 
-# within the div with id wiki-content-block. 
-# This specifically targets the group links (Weapons, Armor etc.) and naturally 
-# excludes other links on the page that sit in <p> tags instead of <h3> tags
-  
+
+# now we extract the nodes' contents: (group_name and href) into a tibble
+# href is the relative path of the link. joined with the base url, it gives us 
+# the group's url
+# removing the "upgrades" row from the results because it's not useful for us
 group_urls_tb <- tibble(
-  text = xml_text(group_links),
+  group_name = xml_text(group_links),
   href = xml_attr(group_links, "href")) |>
   filter(href != "/Upgrades") |> 
-  # removes the "upgrades" row from the results because we don't need it
   mutate(url = paste0(BASE_URL, href)) 
   # adds URL column by combining the base URL with the relevant href
 
 cat("GROUP URLs FOUND:\n")
 print(group_urls_tb) 
-# prints the group URLs -> do we want to include this?
 cat(sprintf("\nTOTAL GROUPS: %d\n\n", nrow(group_urls_tb)))
-# prints number of URLs scraped -> again, do we keep this?
 
 # -----------------------------------------------------------------------------
 # STAGE 2: SCRAPING SUBCATEGORY URLs
 # Three page layouts are handled at Level 2:
 #
 #   Layout A - Tab layout (Armor, Shields, Magic, Items):
-#     The active (default landing) tab uses class "btn-success fullwidth"
-#     and sits outside the main tab container. The remaining tabs use
-#     class "btn-default fullwidth" inside the first div[@align='center'].
-#     The group's own href is filtered out if it appears as the active tab
-#     (this happens on the Shields page).
-#
+#     Subgroup links are in buttons that use class "btn-default fullwidth" 
+#     inside the first div[@align='center'].
+# 
 #   Layout B - Gallery layout (Weapons):
 #     Subcategories are wiki_link anchors inside col-sm-2 divs within
 #     row gallery divs that are direct children of wiki-content-block
@@ -132,47 +124,41 @@ get_subcategory_urls <- function(group_name, group_url) {
   cat(sprintf("  FETCHING SUBCATEGORIES FOR: %s\n", group_name))
   Sys.sleep(2)
   
-  # fetches the group page and converts it into a searchable HTML tree, then 
-  # extracts the relative path from the full URL so we can identify and filter 
-  # out the group's own href if it appears in the subcategory links.
-  # GET fetches the page, content() unwraps it as plain text, and read_html() 
-  # organises it into something we can search through.
-  page <- read_html(GET(group_url) |> content(as = "text")) 
-  # strips the base URL from the full URL to get just the relative path
-  group_href <- str_remove(group_url, fixed(BASE_URL))
+# fetches the group page as a html node tree to start from there
+page <- read_html(GET(group_url) |> content(as = "text"))
+
+# saves the group's relative path again, we will need it later
+group_href <- str_remove(group_url, fixed(BASE_URL))
+
+
+# CHECKING FOR LAYOUT A: tab-based pages (Armor, Shields, Magic, Items)
+
+# we target only the first div[@align='center'] to avoid picking up a 
+# second group of tabs further down the page
+tabs <- xml_find_all(
+  page,
+  "(//div[@align='center'])[1]//a[contains(@class,'btn-default fullwidth')]"
+)
   
-  # CHECKING FOR LAYOUT A: tab-based pages (Armor, Shields, Magic, Items)
-  # searches the entire page for any <a> tag whose class contains btn-success
-  # fullwidth - this is the styling used for the currently active/default landing 
-  # tab, capturing the first subcategory that loads automatically when you visit 
-  # a group page (for example /Ammunition on the Items page)
-  active_tab <- xml_find_all(
-    page,
-    "//a[contains(@class,'btn-success fullwidth')]"
-  )
+# in the "items" page, the first tab has a different styling, "btn-success fullwidth"
+# so we need a special pattern for it
+active_tab <- xml_find_all(
+  page,
+  "//a[contains(@class,'btn-success fullwidth')]"
+)
   
-  # searches inside only the first <div> with align="center" on the page for 
-  # any <a> tags whose class contains btn-default fullwidth — 
-  # this is the styling used for all the inactive tabs, capturing the 
-  # remaining subcategories that aren't the default landing tab. 
-  # we target only the first div[@align='center'] to avoid picking up a 
-  # second group of tabs further down the page (eg Armor page contains unwanted 
-  # set-based tabs)
-  other_tabs <- xml_find_all(
-    page,
-    "(//div[@align='center'])[1]//a[contains(@class,'btn-default fullwidth')]"
-  )
-  
-  # if other_tabs found any results (confirming we're on a tab-based page), it 
-  # combines the href from the active tab and all other tabs into a single vector, 
-  # removes the group's own href if it appears (which happens on the Shields page 
-  # where /Shields appears as the active tab)
-  # and then returns a tibble with the group name, relative hrefs and full 
-  # URLs for all valid subcategories.
-  if (length(other_tabs) > 0) {
+# if "tabs" found any results (confirming we're on a tab-based page), it 
+# combines the href from both types of tags into a single vector
+# and then returns a tibble with the group name, relative hrefs and full 
+# URLs for all subcategories
+
+# As one of the tabs leads back to the group's main page (i.e. "all shields"),
+# the group's own href was scraped too and needs to be filtered out
+
+  if (length(tabs) > 0) {
     hrefs <- c(
       xml_attr(active_tab, "href"),
-      xml_attr(other_tabs, "href")
+      xml_attr(tabs, "href")
     )
     hrefs <- hrefs[hrefs != group_href]
     cat(sprintf("    (tab layout, %d subcategories found)\n", length(hrefs)))
@@ -182,21 +168,22 @@ get_subcategory_urls <- function(group_name, group_url) {
       full_url = paste0(BASE_URL, hrefs)
     ))
   }
+
+# if something is returned, the function stops and loops to the next group
+# if not, it checks for other layouts
   
-  # CHECKING FOR LAYOUT B: gallery-based pages (Weapons)
-  # searches for wiki_link anchors inside col-sm-2 divs within row gallery divs 
-  # that are direct children of wiki-content-block AND have at least one <h2> element following them
-  # the <h2> filter is the key filter that limits results to only the subcategory
-  # galleries at the top of the Weapons page, excluding the 32 individual item 
-  # galleries further down which appear after the <h2> header
+# CHECKING FOR LAYOUT B: gallery-based pages (Weapons)
+
+# searches for wiki_link anchors inside col-sm-2 divs within row gallery divs 
+# that are direct children of wiki-content-block AND have at least one <h2> element following them
   gallery_nodes <- xml_find_all(
     page,
     "//div[@id='wiki-content-block']/div[contains(@class,'row gallery')][count(following-sibling::h2)>0]//div[contains(@class,'col-sm-2')]//a[@class='wiki_link']"
   )
   
-  # If gallery_nodes found any results (confirming we're on a gallery-based page), 
-  # it returns a tibble with the group name, relative hrefs and full URLs for all 
-  # subcategory links found in the gallery
+# If gallery_nodes found any results (confirming we're on a gallery-based page), 
+# it returns a tibble with the group name, relative hrefs and full URLs for all 
+# subcategory links found
   if (length(gallery_nodes) > 0) {
     cat(sprintf("    (gallery layout, %d subcategories found)\n", length(gallery_nodes)))
     return(tibble(
@@ -206,11 +193,11 @@ get_subcategory_urls <- function(group_name, group_url) {
     ))
   }
   
-  # CHECKING FOR LAYOUT C: direct category page (Rings)
-  # fallback for when neither the tab nor gallery layout is detected — it returns 
-  # a tibble with just the group's own URL as the single subcategory, treating 
-  # the group page itself as the category page
-  # currently only applies to Rings
+# CHECKING FOR LAYOUT C: direct category page (Rings)
+# when neither the tab nor gallery layout is detected, the function returns 
+# a tibble with just the group's own URL as the single subcategory, treating 
+# the group page itself as the final page
+# currently only applies to Rings
   cat(sprintf("    (no subcategories found, treating page as direct category)\n"))
   tibble(
     group    = group_name,
@@ -218,15 +205,15 @@ get_subcategory_urls <- function(group_name, group_url) {
     full_url = group_url
   )
 }
-
+# now we call the defined function:
 # map2_dfr() loops over the group names and URLs simultaneously, applying 
-# get_subcategory_urls to each pair and combining all the results into one data frame
+# our function to each pair and combining all the results into one data frame
 all_subcats <- map2_dfr(
-  group_urls_tb$text,
+  group_urls_tb$group_name,
   group_urls_tb$url,
   get_subcategory_urls
 ) |>
-  # adds subcategory column to tibble based off href names
+# adds subcategory column to tibble based off href names
   mutate(
     subcategory = href |>
       str_remove("^/") |>
@@ -472,6 +459,47 @@ extract_description <- function(page) {
   return(list(desc = NA_character_, status = "not_found"))
 }
 
+# creates the function to scrape the location
+# the location info sits inside a <ul> tag directly below a <h3> tag that contains
+# one of these words: find, location or acquired
+# since we don't have a ignore caps function in xml_find_all, we will find all 
+# <h3> tags and filter them with str_detect
+
+extract_location <- function(page) {
+  all_h3s <- xml_find_all(page, "//h3")
+  
+  target_index <- which(str_detect(
+    xml_text(all_h3s), 
+    regex("find|location|acquired", ignore_case = TRUE)
+  ))
+  
+  if (length(target_index) > 0) {
+    target_node <- all_h3s[target_index[1]]
+    
+    # Combined XPath to grab all <li> items directly [cite: 32, 36, 39]
+    li_nodes <- xml_find_all(target_node, "./following-sibling::ul[1]/li")
+    
+    if (length(li_nodes) > 0) {
+      # Extract and clean text [cite: 50]
+      li_texts <- xml_text(li_nodes, trim = TRUE) %>% str_squish()
+      
+      # Step A: Add a dot if there isn't one (Regex: if it doesn't end in .)
+      # The pattern "[.]$" looks for a literal dot at the end of the string.
+      li_texts <- ifelse(str_detect(li_texts, "[.]$"), 
+                         li_texts, 
+                         paste0(li_texts, "."))
+      
+      # Step B: Format as [1] - text1. [2] - text2.
+      formatted_locs <- paste0("[", seq_along(li_texts), "] - ", li_texts, 
+                               collapse = " ")
+      
+      return(list(loc = formatted_locs, status = "ok_loc_list"))
+    }
+  }
+  
+  return(list(loc = NA_character_, status = "not_found")) [cite: 53]
+}
+
 # stores the total number of items as n so it can be referenced throughout 
 # the scraping loop, then prints a progress message to the console showing how 
 # many item pages are about to be scraped.
@@ -484,7 +512,7 @@ cat(sprintf("SCRAPING DESCRIPTIONS FOR %d ITEMS...\n\n", n)) # another progress 
 # progress message showing which item we're currently scraping
 # map_dfr() automatically combines all the results into one data frame at the end
 all_descriptions <- map_dfr(
-  seq_len(n),
+  300:350,
   function(i) {
     item <- all_items[i, ]
     cat(sprintf("[%d/%d] %-40s", i, n, substr(item$item_name, 1, 40)))
@@ -520,9 +548,18 @@ all_descriptions <- map_dfr(
 # we can monitor progress, then returns the item row with two new columns added 
 # description containing the extracted text and scrape_status indicating which
 # strategy found it
-    extracted <- extract_description(page)
-    cat(sprintf(" [%s]\n", extracted$status))
-    item |> mutate(description = extracted$desc, scrape_status = extracted$status)
+    
+    extracted_desc <- extract_description(page)
+    extracted_loc  <- extract_location(page)
+    
+    cat(sprintf(" [Desc: %s | Loc: %s]\n", extracted_desc$status, extracted_loc$status))
+    
+    item |> mutate(
+      description = extracted_desc$desc,
+      scrape_status = extracted_desc$status,
+      location = extracted_loc$loc,
+      loc_status = extracted_loc$status
+    )
   }
 )
 
@@ -547,4 +584,55 @@ dir.create("data", showWarnings = FALSE)
 #creates a data folder to save .csv to -> do we have to chage this for the final product?
 write_csv(all_descriptions, "data/dark_souls_items.csv")
 cat(sprintf("\nSAVED: data/dark_souls_items.csv\n"))
+
+
+
+# # WANDERER HOOD
+# # xpath
+# //*[@id="wiki-content-block"]/ul[2]
+# 
+# # find h3 tag with one of these words and then an ul inside
+# 
+# # SMALL LEATHER SHIELD
+# # xpath
+# //*[@id="wiki-content-block"]/ul[1]
+# # need to filter out "video location timestamp"
+# 
+# # DAGGER
+# # xpath
+# //*[@id="wiki-content-block"]/ul[1]
+# 
+# # MOONLIGHT BUTTERFLY HORN
+# # xpath
+# //*[@id="wiki-content-block"]/ul[1]
+# 
+# # SOUL ARROW
+# # xpath
+# //*[@id="wiki-content-block"]/ul[2]
+# 
+# # TINY BEING'S RING
+# # xpath
+# //*[@id="wiki-content-block"]/ul[2]
+# 
+# # STANDARD ARROW
+# # xpath
+# //*[@id="wiki-content-block"]/ul[2]
+
+# locations are lists, we need to separate into "location 1", "location 2" etc
+
+
+all_descriptions <- read_csv("sagradas_escrituras_ds1.csv")
+
+# 1. Cargar y filtrar
+
+resultados <- all_descriptions %>%
+  filter(str_detect(description, regex("Havel", ignore_case = TRUE)))
+
+# 2. Mostrar en formato "párrafo" legible
+for(i in 1:nrow(resultados)) {
+  cat(paste0("--- ITEM: ", resultados$item_name[i], " ---\n"))
+  cat(resultados$description[i], "\n\n")
+}
+
+
 
