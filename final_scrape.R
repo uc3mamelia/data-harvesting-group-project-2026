@@ -17,6 +17,7 @@
 #   Output: .csv file with all scraped data
 #            data/dark_souls_items.csv
 #            Columns: item_name, group, subcategory, url, path,  description, scrape_status
+#   Query:   Query the data and clean it up so it is easy to read
 #                 
 # =============================================================================
 # STAGE 0 SETUP
@@ -581,7 +582,8 @@ all_descriptions <- map_dfr(
 # like above e need to decide if we want to keep this so the script won't
 # crash or just take out and allow crashes
     if (is.null(page)) {
-      cat(" [fetch_error]\n") # displays that there was an error fetching the description
+      # displays that there was an error fetching the description
+      cat(" [fetch_error]\n")
       return(item |> mutate(description = NA_character_, scrape_status = "fetch_error"))
     }
     
@@ -627,6 +629,45 @@ dir.create("data", showWarnings = FALSE)
 write_csv(all_descriptions, "data/dark_souls_items.csv")
 cat(sprintf("\nSAVED: data/dark_souls_items.csv\n"))
 
+# =============================================================================
+# MAKING A QUERY
+# =============================================================================
 
+# filters the collection using regex and prints results on the console
+# let's find all pieces of text that talk about archbishop Havel
+query <- collected_ds1 |> 
+  filter(str_detect(description, regex("Havel", ignore_case = TRUE)))
+
+for(i in 1:nrow(query)) {
+  cat(paste0("--- ITEM: ", query$item_name[i], " ---\n"))
+  cat(query$description[i], "\n\n")
+}
+
+# let's find out what the game tells us about Big Hat Logan
+query <- collected_ds1 |> 
+  filter(str_detect(description, regex("Logan", ignore_case = TRUE)))
+
+for(i in 1:nrow(query)) {
+  cat(paste0("--- ITEM: ", query$item_name[i], " ---\n"))
+  cat(query$description[i], "\n\n")
+}
+
+# let's learn about a substance called "humanity"
+query <- collected_ds1 |> 
+  filter(str_detect(description, regex("undead", ignore_case = TRUE)))
+
+for(i in 1:nrow(query)) {
+  cat(paste0("--- ITEM: ", query$item_name[i], " ---\n"))
+  cat(query$description[i], "\n\n")
+}
+
+# finally, let's see what items we can find in Darkroot garden
+query <- collected_ds1 |> 
+  filter(str_detect(location, regex("darkroot garden", ignore_case = TRUE)))
+
+for(i in 1:nrow(query)) {
+  cat(paste0("--- ITEM: ", query$item_name[i], " ---\n"))
+  cat(query$description[i],"\n\n", query$location[i], "\n\n")
+}
 
 
