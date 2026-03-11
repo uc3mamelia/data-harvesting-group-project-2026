@@ -8,66 +8,98 @@
 # TO DO: Add the item locations to the scraped data.
 #
 # PIPELINE:
+#   Stage 0: Setup involving packages, user id, defining the base URLs, and
+#            looking at robots.txt file
 #   Stage 1: Scrape group URLs from the Equipment & Magic main page
 #   Stage 2: Scrape the subcategory URLs from each group
 #   Stage 3: Scrape individual item URLs from each subcategory page
-#   Stage 4: Scrape item descriptions from each individual item page
+#   Stage 4: Scrape item descriptions & location from each individual item page
 #   Output: .csv file with all scraped data
 #            data/dark_souls_items.csv
 #            Columns: item_name, group, subcategory, url, path,  description, scrape_status
 #                 
 # =============================================================================
+# STAGE 0 SETUP
+# =============================================================================
 
-# =============================================================================
-# PACKAGES
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Packages
+# -----------------------------------------------------------------------------
 library(xml2)
 library(httr)
 library(tidyverse)
 
-# =============================================================================
-# DEFINING THE BASE URLs
-# =============================================================================
+# -----------------------------------------------------------------------------
+# User ID
+# a descriptive user agent helps the website owner understand our purpose
+# -----------------------------------------------------------------------------
+{
+  cat("\n!!! ACTION REQUIRED IN CONSOLE !!!\n")
+  
+  # This loop will not let the script continue until a name is entered
+  repeat {
+    user_id_input <-readline("Please enter your name or student ID: ")
+    
+    if (nchar(trimws(user_id_input)) > 0) {
+      # Exit the loop if they typed something
+      break
+    }
+    
+    cat("Error: You must enter an ID to identify your scrape to the server.\n")
+  }
+  
+  # Construct the agent string
+  custom_ua <- user_agent(
+    paste0("Mozilla/5.0 (compatible; DarkSoulsLoreScraper/1.0; Academic project; ", user_id_input, ")")
+  )
+  
+  # Apply the config
+  set_config(custom_ua)
+  
+  cat(sprintf("\n>>> User-Agent successfully set for: %s <<<\n\n", user_id_input))
+}
+
+# -----------------------------------------------------------------------------
+# Define the Base URLs
+# -----------------------------------------------------------------------------
 BASE_URL      <- "https://darksouls.wiki.fextralife.com"
 EQUIPMENT_URL <- paste0(BASE_URL, "/Equipment+&+Magic")
 
-# =============================================================================
-# CHECKING PERMISSIONS
+# -----------------------------------------------------------------------------
+# Check Permissions
 # this fetches and displays the robots.txt file of the wiki
 # then the user has to verify and confirm scraping is allowed to continue
-# scraping is allowed at the moment, but it should be checked anytime the code
-# is run in case permissions change
-# =============================================================================
-cat("CHECKING ROBOTS.TXT...\n\n")
-
-robots_txt <- GET(paste0(BASE_URL, "/robots.txt")) |> content(as = "text")
-cat(robots_txt)
-cat("\n")
-
-confirm <- readline("Proceed with scrape? (y/n): ")
-
-if (tolower(confirm) != "y") {
-  stop("SCRAPE ABORTED.")
+# The site allows scraping at the moment, but it should be re-verified
+# every time the code is run in case permissions change
+# -----------------------------------------------------------------------------
+{
+  cat("\n--- PERMISSIONS CHECK ---\n")
+  # Fetching the robots.txt first
+  robots_txt <- GET(paste0(BASE_URL, "/robots.txt")) |> content(as = "text")
+  cat(robots_txt)
+  
+  # Reset the confirm variable
+  confirm <- ""
+  
+  # Use a single block that only asks once per 'attempt'
+  while (!confirm %in% c("y", "n")) {
+    confirm <- tolower(trimws(readline("Proceed with scrape? (y/n): ")))
+    
+    if (confirm == "n") stop("SCRAPE ABORTED.")
+    if (confirm == "y") break
+    
+    cat("Please enter 'y' or 'n'.\n")
+  }
+  
+  cat("\nOK TO CONTINUE WITH STAGE 1\n")
 }
 
-cat("\nPROCEEDING WITH SCRAPE\n\n")
-
 # =============================================================================
-# SETTING USER AGENT
-# a descriptive user agent helps the website owner understand our purpose
+# STAGE 1
+#     Scrape group URLs from the Equipment & Magic main page (excluding upgrades)
+#     EXPECTED OUTPUT: 6 group URLs
+#     URL to follow along: https://darksouls.wiki.fextralife.com/Equipment+&+Magic
 # =============================================================================
-set_config(
-  user_agent("Mozilla/5.0 (compatible; DarkSoulsLoreScraper/1.0; Academic project)")
-)
-
-# =============================================================================
-# STAGE 1: Scrape group URLs from the Equipment & Magic main page (excluding upgrades)
-#          EXPECTED OUTPUT: 6 group URLs
-# =============================================================================
-
-# -----------------------------------------------------------------------------
-# STAGE 1: SCRAPING GROUP URLs
-# -----------------------------------------------------------------------------
 cat("STAGE 1: SCRAPING GROUP URLs\n")
 
 # pauses between each request. this avoids overwhelming
@@ -76,84 +108,95 @@ Sys.sleep(2)
 # accessing the "starting page"
 equipment_page <- read_html(GET(EQUIPMENT_URL) |> content(as = "text"))
 
-# there are 6 main groups of items we want to scrape: armor, shields, weapons,
-# magic, rings and items. we want to scrape their names and urls
+# scrape the names and URLS of the 6 main groups of items:
+# armor, shields, weapons, magic, rings, and items.
 
-# first we locate the nodes of our desired links through a common unique pattern:
-# <a> tags with class wiki_link that sit inside an <h3> tag anywhere 
-# within the div with id wiki-content-block
+# First, find a common unique pattern for the links:
+
 group_links <-
   equipment_page |>
+  # an <a> tag with class "wiki_link" inside of an <h3> anywhere in the wiki-content-block
   xml_find_all("//div[@id='wiki-content-block']//h3//a[@class='wiki_link']")
 
-# now we extract the nodes' contents: (group_name and href) into a tibble
-# href is the relative path of the link. joined with the base url, it gives us 
-# the group's url
-# removing the "upgrades" row from the results because it's not useful for us
-group_urls_tb <- tibble(
-  group_name = xml_text(group_links),
-  href = xml_attr(group_links, "href")) |>
-  filter(href != "/Upgrades") |> 
-  mutate(url = paste0(BASE_URL, href)) 
-  # adds URL column by combining the base URL with the relevant href
+# Next, Extract the contents of the links into a tibble:
 
+group_urls_tb <- tibble(
+  # Group Name: armor, shields, weapons, magic, rings, and items
+  group_name = xml_text(group_links),
+  # href: the relative path of the link
+  href = xml_attr(group_links, "href")) |>
+  # remove the "upgrades" row from the results because it's not useful
+  filter(href != "/Upgrades") |> 
+  # add URL column by combining the base URL with the relative href
+  mutate(url = paste0(BASE_URL, href)) 
+
+# prints what was done
 cat("GROUP URLs FOUND:\n")
 print(group_urls_tb) 
 cat(sprintf("\nTOTAL GROUPS: %d\n\n", nrow(group_urls_tb)))
-
-# -----------------------------------------------------------------------------
-# STAGE 2: SCRAPING SUBCATEGORY URLs
-# Three page layouts are handled at Level 2:
+cat("\nSTAGE 1 COMPLETE, OK TO CONTINUE WITH STAGE 2\n")
+# =============================================================================
+# STAGE 2: 
+#    Scraping Subcategory URLs
+#    There are three page layouts being scraped:
 #
-#   Layout A - Tab layout (Armor, Shields, Magic, Items):
-#     Subgroup links are in buttons that use class "btn-default fullwidth" 
-#     inside the first div[@align='center'].
+#    Layout A - Tab layout (Armor, Shields, Magic, Items):
+#     The links needing to be scraped are organized into groups by buttons
+#     at the top of page. 
+#     Example URL: https://darksouls.wiki.fextralife.com/Shields
 # 
-#   Layout B - Gallery layout (Weapons):
-#     Subcategories are wiki_link anchors inside col-sm-2 divs within
-#     row gallery divs that are direct children of wiki-content-block
-#     AND appear before the h2 titlearea header.
+#    Layout B - Gallery layout (Weapons):
+#     The links needing to be scraped are organized by a set of categories
+#     at the top of the page.
+#     Example URL: https://darksouls.wiki.fextralife.com/Weapons
 #
-#   Layout C - Direct category (Rings):
-#     The group page itself is the only category. Detected when neither
-#     Layout A or Layout B returns any results.
-# -----------------------------------------------------------------------------
+#    Layout C - Direct category (Rings):
+#     The links needing to be scraped are not organized into any groups.
+#     All links appear on this page.
+#     Example URL: https://darksouls.wiki.fextralife.com/Rings
+#
+#    A loop cycles through these layouts in order to determine which is
+#    being used on the page.
+# =============================================================================
 cat("STAGE 2: SCRAPING SUBCATEGORY URLs\n")
+
+# beginning of function
 get_subcategory_urls <- function(group_name, group_url) {
   # shows what group is being scraped currently
   cat(sprintf("  FETCHING SUBCATEGORIES FOR: %s\n", group_name))
   Sys.sleep(2)
   
-# fetches the group page as a html node tree to start from there
-page <- read_html(GET(group_url) |> content(as = "text"))
+  # fetches the group page as a html node tree to start from there
+  page <- read_html(GET(group_url) |> content(as = "text"))
 
-# saves the group's relative path again, we will need it later
-group_href <- str_remove(group_url, fixed(BASE_URL))
+  # saves the group's relative path again, we will need it later
+  group_href <- str_remove(group_url, fixed(BASE_URL))
 
+  # ---------------------------------------------------------------------------
+  # CHECKING FOR LAYOUT A: tab-based pages (Armor, Shields, Magic, Items)
 
-# CHECKING FOR LAYOUT A: tab-based pages (Armor, Shields, Magic, Items)
+  # target only the first div[@align='center'] to avoid picking up a 
+  # second group of tabs further down the page
+  # ---------------------------------------------------------------------------
 
-# we target only the first div[@align='center'] to avoid picking up a 
-# second group of tabs further down the page
-tabs <- xml_find_all(
-  page,
-  "(//div[@align='center'])[1]//a[contains(@class,'btn-default fullwidth')]"
-)
+  # find all buttons on page
+  tabs <- xml_find_all(
+    page,
+    "(//div[@align='center'])[1]//a[contains(@class,'btn-default fullwidth')]"
+  )
   
-# in the "items" page, the first tab has a different styling, "btn-success fullwidth"
-# so we need a special pattern for it
-active_tab <- xml_find_all(
-  page,
-  "//a[contains(@class,'btn-success fullwidth')]"
-)
+  # find the 'active' button (styled as "btn-success fullwidth")
+  active_tab <- xml_find_all(
+    page,
+    "//a[contains(@class,'btn-success fullwidth')]"
+  )
   
-# if "tabs" found any results (confirming we're on a tab-based page), it 
-# combines the href from both types of tags into a single vector
-# and then returns a tibble with the group name, relative hrefs and full 
-# URLs for all subcategories
+  # if any buttons matching the above are found, the code combines the href
+  # from both types of tags into a single vector and then returns a tibble
+  # with the group name, relative hrefs and full URLs for all subcategories
 
-# As one of the tabs leads back to the group's main page (i.e. "all shields"),
-# the group's own href was scraped too and needs to be filtered out
+  # As one of the tabs leads back to the group's main page (i.e. "all shields"),
+  # the group's own href was scraped too and needs to be filtered out
 
   if (length(tabs) > 0) {
     hrefs <- c(
@@ -169,21 +212,24 @@ active_tab <- xml_find_all(
     ))
   }
 
-# if something is returned, the function stops and loops to the next group
-# if not, it checks for other layouts
-  
-# CHECKING FOR LAYOUT B: gallery-based pages (Weapons)
+  # if something is returned, the function stops and loops to the next group
+  # if not, it checks for other layouts
 
-# searches for wiki_link anchors inside col-sm-2 divs within row gallery divs 
-# that are direct children of wiki-content-block AND have at least one <h2> element following them
+  # ---------------------------------------------------------------------------
+  # CHECKING FOR LAYOUT B: gallery-based pages (Weapons)
+
+  # searches for wiki_link anchors inside col-sm-2 divs within row gallery divs 
+  # that are direct children of wiki-content-block AND have at least one <h2> 
+  # element following them
+  # ---------------------------------------------------------------------------
+
   gallery_nodes <- xml_find_all(
     page,
     "//div[@id='wiki-content-block']/div[contains(@class,'row gallery')][count(following-sibling::h2)>0]//div[contains(@class,'col-sm-2')]//a[@class='wiki_link']"
   )
   
-# If gallery_nodes found any results (confirming we're on a gallery-based page), 
-# it returns a tibble with the group name, relative hrefs and full URLs for all 
-# subcategory links found
+  # If any divs matching the above are found, the code returns a tibble with the 
+  # group name, relative hrefs and full URLs
   if (length(gallery_nodes) > 0) {
     cat(sprintf("    (gallery layout, %d subcategories found)\n", length(gallery_nodes)))
     return(tibble(
@@ -192,12 +238,15 @@ active_tab <- xml_find_all(
       full_url = paste0(BASE_URL, xml_attr(gallery_nodes, "href"))
     ))
   }
+  # ---------------------------------------------------------------------------
+  # CHECKING FOR LAYOUT C: direct category page (Rings)
   
-# CHECKING FOR LAYOUT C: direct category page (Rings)
-# when neither the tab nor gallery layout is detected, the function returns 
-# a tibble with just the group's own URL as the single subcategory, treating 
-# the group page itself as the final page
-# currently only applies to Rings
+  # when neither the tab nor gallery layout is detected, the function returns 
+  # a tibble with just the group's own URL as the single subcategory, treating 
+  # the group page itself as the final page
+  # currently only applies to Rings
+  # ---------------------------------------------------------------------------
+
   cat(sprintf("    (no subcategories found, treating page as direct category)\n"))
   tibble(
     group    = group_name,
@@ -205,9 +254,9 @@ active_tab <- xml_find_all(
     full_url = group_url
   )
 }
-# now we call the defined function:
-# map2_dfr() loops over the group names and URLs simultaneously, applying 
-# our function to each pair and combining all the results into one data frame
+
+# now call a loop function over group names and URLs simultaneously, 
+# combining all the results into one data frame
 all_subcats <- map2_dfr(
   group_urls_tb$group_name,
   group_urls_tb$url,
@@ -223,43 +272,47 @@ all_subcats <- map2_dfr(
 cat("\nSUBCATEGORY URLs FOUND:\n")
 print(all_subcats, n = Inf)
 cat(sprintf("\nTOTAL SUBCATEGORIES SCRAPED: %d\n\n", nrow(all_subcats)))
+cat("\nSTAGE TWO COMPLETE, OK TO CONTINUE WITH STAGE THREE\n")
 
 # =============================================================================
-# STAGE 3: SCRAPING INDIVIDUAL ITEM URLs FROM EACH SUBCATEGORY PAGE
-# Two page layouts are handled:
+# STAGE 3:
+#     Scrape individual item URLs from each subcategory page
 #
-#   Layout A - table-based (most pages):
-#     Items are in wiki_table(s). Stats tables are identified by header
-#     keywords and skipped. Column selection checks td[1] first and falls
-#     back to td[2] if td[1] contains no text links.
+#     Two page layouts are handled:
 #
-#   Layout B - gallery-based (i.e. Armor):
-#     Items are in col-sm-2 divs inside a row gallery div.
+#     Layout 1 - table-based (most pages):
+#       Items are in wiki_table(s). Stats tables are identified by header
+#       keywords and skipped. Column selection checks td[1] first and falls
+#       back to td[2] if td[1] contains no text links.
+#       Example URL: https://darksouls.wiki.fextralife.com/Rings
 #
-# Upgrade variants (e.g. "Pyromancy Flame (Upgraded)") are excluded as
-# they are states of existing items rather than distinct items and have
-# no descriptions on the wiki.
+#     Layout 2 - gallery-based (i.e. Armor):
+#       Items are in col-sm-2 divs inside a row gallery div.
+#       Example URL: https://darksouls.wiki.fextralife.com/Armor
+#
+#     Upgrade variants (e.g. "Pyromancy Flame (Upgraded)") are excluded as
+#     they are states of existing items rather than distinct items and have
+#     no descriptions on the wiki.
 # =============================================================================
 cat("STAGE 3: SCRAPING INDIVIDUAL ITEM URLs\n")
 
 # defines the scrape_item_links function which takes three arguments — the group 
 # name, subcategory name, and relative path
-# then pauses for 2 seconds, constructs the full URL, and prints a progress message 
-# showing the current group, subcategory and URL being scraped
 scrape_item_links <- function(group_name, subcategory_name, path) {
   
-  Sys.sleep(2) # 2 second pause
+  # 2 second pause
+  Sys.sleep(2)
   
-  url <- paste0(BASE_URL, path) # constructing URL
+  # constructs the full URL
+  url <- paste0(BASE_URL, path)
+  
+  # prints a progress message
   cat(sprintf("  [%-22s > %-20s] %s\n", group_name, subcategory_name, url)) 
-  # progress message
   
-# tryCatch is R's error handling mechanism -  if the page fetches successfully 
-# it continues normally
-# but if anything goes wrong it issues a warning with the error message and returns 
-# NULL instead of crashing the entire script
-# we can either leave the tryCatch() parts in or take them out, it just means 
-# the script will crash if there is an error
+  # fetch the pages
+  # tryCatch is R's error handling mechanism -  if the page fetches successfully 
+  # it continues normally but if anything goes wrong it issues a warning with 
+  # the error message and returns NULL instead of crashing the entire script
   page <- tryCatch( 
     read_html(url),
     error = function(e) {
@@ -270,51 +323,48 @@ scrape_item_links <- function(group_name, subcategory_name, path) {
   
   if (is.null(page)) return(data.frame())
   
-# This searches the fetched page for all <table> elements whose class contains 
-# wiki_table (the wiki's standard table format)
-# stores them all as a collection so we can loop over them in the next step.
+  # ---------------------------------------------------------------------------
+  # CHECKING FOR LAYOUT 1: table-based
+  
+  # Search the fetched page for all <table> elements whose class contains wiki_table
+  # stores them as a collection so they can be looped over later.
+  # ---------------------------------------------------------------------------
   all_tables <- xml_find_all(page, "//table[contains(@class,'wiki_table')]")
   
-# checks whether any wiki_table elements were found on the page, if none were 
-# found it means the page uses a gallery layout instead of a table layout
-# and moves on to layout B check
+  # ---------------------------------------------------------------------------
+  # CHECKING FOR LAYOUT 2 & EXTRACTING: gallery-based
+  
+  # If no wiki_table elements were found, look for wiki_link anchors inside
+  # col-sm-2 divs. Extract the href attribute and visible text from each link.
+  # Store the info in separate vectors for hrefs and names
+  # ---------------------------------------------------------------------------
   if (length(all_tables) == 0) {
-# Layout B: gallery-based (e.g. Unique Armor)
     cat(sprintf("    (no table found, trying gallery layout)\n")) 
-# this is also just a text output that is't necessarily needed
-# searches the page for wiki_link anchors inside col-sm-2 divs 
-# (the gallery structure used), 
-# then extracts the href attribute and visible text from each link into separate 
-# vectors hrefs and names
-# these are used later to build the output data frame.
+    # find wiki-link anchors in col-sm-2
     gallery_links <- xml_find_all(
       page,
       "//div[contains(@class,'col-sm-2')]//a[contains(@class,'wiki_link')]"
     )
+    # store data in vectors
     hrefs <- xml_attr(gallery_links, "href")
     names <- xml_text(gallery_links, trim = TRUE)
-    
-# opens the table layout branch and initialises two empty character vectors 
-# hrefs and names these act as containers that will be filled up as we loop 
-# over each table on the page, accumulating all the item links and names 
-# found across multiple tables
+   
 } else {
+  # ---------------------------------------------------------------------------
+  # EXTRACTING LAYOUT 1: table-based
+  # ---------------------------------------------------------------------------
 
-# Layout A: table-based
+    # create empty vectors for data
     hrefs <- character(0)
     names <- character(0)
     
-# opens the loop that iterates over each table found on the page, and for each 
-# table extracts the text from the first header cell (<th>) in the first row
-# this header text is then used in the next step to identify and skip stats 
-# tables that were accidentally being scraped otherwise
-# The .// at the start of the XPath means "search anywhere within the current 
-# table" rather than search the whole page
+    # loop over all tables found on the page
     for (tbl in all_tables) {
+      # extract the first header cell in first row
       first_header <- xml_find_first(tbl, ".//tr[1]//th[1]") |>
         xml_text(trim = TRUE)
       
-      # skip stats tables identified by header keywords
+      # use keywords to skip unneeded stats tables
       if (!is.na(first_header) && str_detect(first_header, regex(
         "defense|reduction|requirements|bonus|attack|parameter",
         ignore_case = TRUE
@@ -322,40 +372,34 @@ scrape_item_links <- function(group_name, subcategory_name, path) {
         next
       }
       
-# extracts item links from each table by checking both the first and second columns: 
-# td1 gets all wiki_link anchors from the first column and td2 from the second
-# td1_names extracts the text from the first column links, and best then selects 
-# whichever column contains actual text (at least 2 characters)
-# this handles the inconsistency across pages where some tables have the item name 
-# in the first column while others have an image in the first column and the name 
-# in the second
-# selected links and names are then appended to the hrefs and names vectors using c()
+      # some tables have the label in the first column, and some in the second.
+      # save both table cells
       td1       <- xml_find_all(tbl, ".//tr/td[1]//a[@class='wiki_link']")
       td2       <- xml_find_all(tbl, ".//tr/td[2]//a[@class='wiki_link']")
+      # create a third variable for the logic
       td1_names <- xml_text(td1, trim = TRUE)
+      # the data is either text or an image. Determine if td1_names has text, if
+      # not, the label must be in td2
       best      <- if (any(nchar(td1_names) >= 2)) td1 else td2
+      # save the links
       hrefs     <- c(hrefs, xml_attr(best, "href"))
+      # save the labels from the better option for each table
       names     <- c(names, xml_text(best, trim = TRUE))
     }
   }
   
-# this prints a warning message identifying which subcategory had no results 
-# and returns an empty data frame
-# again, we can get rid of the message if we want and also get rid of the empty 
-# data frame creation but it means
-# if there is an issue the script will just crash
+  # this prints a warning message identifying which subcategory had no results 
+  # and returns an empty data frame
   if (length(hrefs) == 0) {
     warning(sprintf("No item name links found for: %s", subcategory_name))
     return(data.frame())
   }
   
-# strips the base URL prefix from any hrefs that might contain it, ensuring all 
-# hrefs are stored as relative paths
-# fixed() ensures the base URL is treated as a literal string rather than a 
-# regular expression
+  # strips the base URL prefix from any hrefs that might contain it, ensuring all 
+  # hrefs are stored as relative paths
   hrefs <- str_remove(hrefs, fixed(BASE_URL))
   
-# Filter to exclude upgrade variants
+  # Filter to exclude upgrade variants
   is_item_link <- nchar(names) >= 2 &
     !str_detect(names, regex("upgraded", ignore_case = TRUE))
   
@@ -364,7 +408,7 @@ scrape_item_links <- function(group_name, subcategory_name, path) {
   
   if (length(hrefs) == 0) return(data.frame())
   
-# defining the final dataframe
+  # defining the final dataframe
   data.frame(
     item_name   = names,
     group       = group_name,
@@ -400,57 +444,57 @@ all_items <- pmap_dfr(
 cat(sprintf("\nFINISHED. TOTAL ITEM URLS COLLECTED: %d\n\n", nrow(all_items)))
 # shows breakdown of scrape
 all_items |> count(group, subcategory) |> as.data.frame() |> print()
-
+cat("\nSTAGE THREE COMPLETE, OK TO CONTINUE WITH STAGE FOUR\n")
 # =============================================================================
-# STAGE 4: SCRAPING ITEM DESCRIPTIONS
-# Two strategies are tried in order:
+# STAGE 4:
+#     Scrape item descriptions & Location from each individual item page
+#     
+#     Two strategies are tried in order:
 #
-#   Strategy 1 - blockquote:
-#     Most items have their description inside a <blockquote> tag within
-#     wiki-content-block. xml_text() captures the full text regardless of
-#     whether it is wrapped in <p>, <em>, or both.
+#     Strategy 1 - blockquote:
+#       Most items have their description inside a <blockquote> tag within
+#       wiki-content-block. xml_text() captures the full text regardless of
+#       whether it is wrapped in <p>, <em>, or both.
+#       Example URL: https://darksouls.wiki.fextralife.com/Skull+Lantern
+#       Example URL: https://darksouls.wiki.fextralife.com/Pendant
 #
-#   Strategy 2 - quoted paragraph:
-#     Some items (certain armor pieces, some weapons) have their description
-#     in a plain <p> tag starting with a quote character, with no blockquote.
+#     Strategy 2 - quoted paragraph:
+#       Some items (certain armor pieces, some weapons) have their description
+#       in a plain <p> tag starting with a quote character, with no blockquote.
+#       Example URL: https://darksouls.wiki.fextralife.com/Balder+Leggings
 # =============================================================================
 cat("STAGE 4: SCRAPING ITEM DESCRIPTIONS\n")
 
 extract_description <- function(page) {
   
 # Strategy 1: blockquote
-# searches the page for the first <blockquote> element within wiki-content-block, 
-# which is the HTML structure used by most item pages to contain the in-game description text
+# searches the page for the first <blockquote> element within wiki-content-block
   blockquote <- xml_find_first(
     page,
     "//div[@id='wiki-content-block']//blockquote"
   )
   
-# If a blockquote was found (i.e. it is not NA), this extracts the full text 
-# content from it, with trim = TRUE removing leading and trailing whitespace 
-# and str_squish() collapsing any internal whitespace into single spaces
-# returns a list with the description text and a status of "ok_blockquote"
-# to indicate which strategy successfully found the description
+# If a blockquote was found, extract the full text 
   if (!is.na(blockquote)) {
+    # collapse any internal whitespace into single spaces
     desc <- xml_text(blockquote, trim = TRUE) |> str_squish()
+    # return list with description text and status of "ok_blockquote"
     return(list(desc = desc, status = "ok_blockquote"))
   }
 
-# Strategy 2: <p> tag starting with a quote character
-# searches the page for the first <p> element within wiki-content-block 
-# whose text starts with a quote character "
-# the normalize-space(.) part strips any leading whitespace from the 
-# text before checking, ensuring we don't miss paragraphs where the first 
-# quote character is preceded by a space.
+  # Strategy 2: quoted paragraph
+  # searches the page for the first <p> element within wiki-content-block 
+  # whose text starts with a quote character "
   desc_p <- xml_find_first(
     page,
     "//div[@id='wiki-content-block']//p[starts-with(normalize-space(.), '\"')]"
   )
   
-# Same structure as the blockquote check — if a matching <p> tag was found, 
-# it extracts and cleans the text and returns it with a status of "ok_p_tag"
+  # if a matching <p> tag was found, extract text
   if (!is.na(desc_p)) {
+    # collapse any internal whitespace into single spaces
     desc <- xml_text(desc_p, trim = TRUE) |> str_squish()
+    # return list with description text and status of "ok_blockquote"
     return(list(desc = desc, status = "ok_p_tag"))
   }
   
@@ -459,15 +503,12 @@ extract_description <- function(page) {
   return(list(desc = NA_character_, status = "not_found"))
 }
 
-# creates the function to scrape the location
-# the location info sits inside a <ul> tag directly below a <h3> tag that contains
-# one of these words: find, location or acquired
-# since we don't have a ignore caps function in xml_find_all, we will find all 
-# <h3> tags and filter them with str_detect
-
+# scrape the location
 extract_location <- function(page) {
+  # find all h3 elements
   all_h3s <- xml_find_all(page, "//h3")
   
+  # determine if h3 contains "find, location, or acquired"
   target_index <- which(str_detect(
     xml_text(all_h3s), 
     regex("find|location|acquired", ignore_case = TRUE)
@@ -481,7 +522,7 @@ extract_location <- function(page) {
     
     if (length(li_nodes) > 0) {
       # Extract and clean text [cite: 50]
-      li_texts <- xml_text(li_nodes, trim = TRUE) %>% str_squish()
+      li_texts <- xml_text(li_nodes, trim = TRUE) |> str_squish()
       
       # Step A: Add a dot if there isn't one (Regex: if it doesn't end in .)
       # The pattern "[.]$" looks for a literal dot at the end of the string.
@@ -504,7 +545,8 @@ extract_location <- function(page) {
 # the scraping loop, then prints a progress message to the console showing how 
 # many item pages are about to be scraped.
 n <- nrow(all_items)
-cat(sprintf("SCRAPING DESCRIPTIONS FOR %d ITEMS...\n\n", n)) # another progress signpost
+# another progress signpost
+cat(sprintf("SCRAPING DESCRIPTIONS FOR %d ITEMS...\n\n", n))
 
 # Scrape all descriptions and add directly to all_items
 # map_dfr() here is looping over the numbers 1 to n (one number per item), 
@@ -512,7 +554,7 @@ cat(sprintf("SCRAPING DESCRIPTIONS FOR %d ITEMS...\n\n", n)) # another progress 
 # progress message showing which item we're currently scraping
 # map_dfr() automatically combines all the results into one data frame at the end
 all_descriptions <- map_dfr(
-  300:350,
+  1:n,
   function(i) {
     item <- all_items[i, ]
     cat(sprintf("[%d/%d] %-40s", i, n, substr(item$item_name, 1, 40)))
@@ -563,7 +605,7 @@ all_descriptions <- map_dfr(
   }
 )
 
-cat("FINISHED SCRAPING ITEM DESCRIPTIONS\n")
+cat("\nSTAGE FOUR COMPLETE, OK TO CONTINUE WITH OUTPUT\n")
 
 # =============================================================================
 # OUTPUT: WRITE FINAL CSV
@@ -585,54 +627,6 @@ dir.create("data", showWarnings = FALSE)
 write_csv(all_descriptions, "data/dark_souls_items.csv")
 cat(sprintf("\nSAVED: data/dark_souls_items.csv\n"))
 
-
-
-# # WANDERER HOOD
-# # xpath
-# //*[@id="wiki-content-block"]/ul[2]
-# 
-# # find h3 tag with one of these words and then an ul inside
-# 
-# # SMALL LEATHER SHIELD
-# # xpath
-# //*[@id="wiki-content-block"]/ul[1]
-# # need to filter out "video location timestamp"
-# 
-# # DAGGER
-# # xpath
-# //*[@id="wiki-content-block"]/ul[1]
-# 
-# # MOONLIGHT BUTTERFLY HORN
-# # xpath
-# //*[@id="wiki-content-block"]/ul[1]
-# 
-# # SOUL ARROW
-# # xpath
-# //*[@id="wiki-content-block"]/ul[2]
-# 
-# # TINY BEING'S RING
-# # xpath
-# //*[@id="wiki-content-block"]/ul[2]
-# 
-# # STANDARD ARROW
-# # xpath
-# //*[@id="wiki-content-block"]/ul[2]
-
-# locations are lists, we need to separate into "location 1", "location 2" etc
-
-
-all_descriptions <- read_csv("sagradas_escrituras_ds1.csv")
-
-# 1. Cargar y filtrar
-
-resultados <- all_descriptions %>%
-  filter(str_detect(description, regex("Havel", ignore_case = TRUE)))
-
-# 2. Mostrar en formato "párrafo" legible
-for(i in 1:nrow(resultados)) {
-  cat(paste0("--- ITEM: ", resultados$item_name[i], " ---\n"))
-  cat(resultados$description[i], "\n\n")
-}
 
 
 
