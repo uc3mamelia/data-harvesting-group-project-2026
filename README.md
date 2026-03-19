@@ -34,3 +34,4 @@ A csv file with the following columns:
 - description
 - scrape status
 - location
+- location status
